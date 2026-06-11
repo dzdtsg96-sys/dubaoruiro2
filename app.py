@@ -282,3 +282,142 @@ with tab_metrics:
     c_4.metric("F1-Score", f"{metrics['f1']:.4f}")
     
     st.divider()
+    col_l, col_r = st.columns(2)
+    
+    with col_l:
+        st.markdown("#### 📐 Ma trận nhầm lẫn (Confusion Matrix)")
+        cm = metrics['confusion_matrix']
+        fig_cm = px.imshow(
+            cm, text_auto=True,
+            x=['Dự đoán Hợp lệ (0)', 'Dự đoán Gian lận (1)'],
+            y=['Thực tế Hợp lệ (0)', 'Thực tế Gian lận (1)'],
+            color_continuous_scale='Blues', height=350
+        )
+        st.plotly_chart(fig_cm, use_container_width=True)
+        
+        st.markdown("#### 📑 Báo cáo chi tiết từng phân lớp")
+        rep_df = pd.DataFrame(metrics['classification_report']).transpose()
+        st.dataframe(rep_df.style.format(precision=4), use_container_width=True)
+        
+    with col_r:
+        st.markdown("#### 🏆 Các biến đóng góp quan trọng nhất (Feature Importance)")
+        fig_imp = px.bar(
+            feat_imp, x='Importance', y='Feature', orientation='h',
+            title='Mức độ quan trọng đóng góp vào quyết định phân tách của cây',
+            color='Importance', color_continuous_scale='Plasma', height=450
+        )
+        fig_imp.update_layout(yaxis={'categoryorder':'total ascending'})
+        st.plotly_chart(fig_imp, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# THÀNH PHẦN 6: TAB "SỬ DỤNG MÔ HÌNH DỰ BÁO"
+# -----------------------------------------------------------------------------
+with tab_inference:
+    st.subheader("🔮 Chẩn đoán rủi ro rà soát giao dịch")
+    
+    # Kiểm tra điều phối trạng thái session_state
+    if 'trained_model' not in st.session_state:
+        st.info("💡 Hướng dẫn: Tính năng dự báo đang bị khóa. Vui lòng bấm nút '🚀 Huấn luyện Mô hình' ở Sidebar trước.")
+        st.stop()
+        
+    model = st.session_state['trained_model']
+    
+    # CHỌN CHẾ ĐỘ BẰNG ST.RADIO Ở ĐẦU TAB
+    mode = st.radio(
+        "Lựa chọn phương thức đầu vào:",
+        options=["Chế độ 1 — Nhập thông số trực tiếp qua Form", "Chế độ 2 — Tải file dữ liệu kiểm thử hàng loạt"],
+        horizontal=True
+    )
+    
+    st.divider()
+    
+    # CHẾ ĐỘ 1 — NHẬP TRỰC TIẾP
+    if "Chế độ 1" in mode:
+        st.markdown("#### 📝 Điền thông tin giao dịch cần thẩm định")
+        
+        with st.form("single_inference_form"):
+            st.markdown("##### Nhập thông số kỹ thuật (Cột độc lập từ X_1 đến X_14):")
+            inf_cols = st.columns(3)
+            input_data = {}
+            
+            for idx, feat in enumerate(FEATURE_COLUMNS):
+                with inf_cols[idx % 3]:
+                    # Mặc định = trung vị, khoảng min/max lấy động theo dữ liệu thô đã nạp
+                    default_val = float(df_raw[feat].median())
+                    min_val = float(df_raw[feat].min())
+                    max_val = float(df_raw[feat].max())
+                    
+                    input_data[feat] = st.number_input(
+                        f"Giá trị {feat}",
+                        min_value=min_val - 50.0, max_value=max_val + 50.0,
+                        value=default_val, format="%.6f"
+                    )
+            
+            submit_pred = st.form_submit_button("🔍 Chẩn đoán Giao dịch", type="primary", use_container_width=True)
+            
+        if submit_pred:
+            X_single = pd.DataFrame([input_data])[FEATURE_COLUMNS]
+            pred_class = model.predict(X_single)[0]
+            pred_proba = model.predict_proba(X_single)[0] if hasattr(model, "predict_proba") else None
+            
+            st.markdown("#### 🏁 Kết quả thẩm định từ mô hình AI:")
+            col_res1, col_res2 = st.columns(2)
+            
+            if pred_class == 1:
+                col_res1.error("🚨 CẢNH BÁO: Giao dịch có dấu hiệu GIAN LẬN / NGUY CƠ CAO! (default = 1)")
+            else:
+                col_res1.success("🟢 AN TOÀN: Giao dịch được xác định HỢP LỆ. (default = 0)")
+                
+            if pred_proba is not None:
+                prob_risk = pred_proba[1] * 100
+                col_res2.metric("Xác suất rủi ro gian lận", f"{prob_risk:.2f} %")
+                st.progress(pred_proba[1])
+
+    # CHẾ ĐỘ 2 — TẢI FILE THEO CẤU TRÚC X_TEST
+    else:
+        st.markdown("#### 📂 Tải lên danh sách giao dịch kiểm thử mới")
+        st.caption("Yêu cầu tệp dữ liệu phải chứa đầy đủ các cột đặc trưng độc lập từ `X_1` tới `X_14`.")
+        
+        batch_file = st.file_uploader(
+            "Tải lên tệp dữ liệu kiểm thử (.csv hoặc .xlsx)", 
+            type=["csv", "xlsx"], key="inference_batch_uploader"
+        )
+        
+        if batch_file is not None:
+            # ĐỌC FILE BATCH QUA HÀM CACHE DÙNG CHUNG ĐÃ ĐƯỢC SỬA LỖI TRUYỀN BYTES VIA IO.BYTESIO
+            df_batch = load_data(batch_file.getvalue(), batch_file.name)
+            
+            if df_batch is not None:
+                # Kiểm tra đối chiếu schema tệp đầu vào
+                missing_batch_feats = [col for col in FEATURE_COLUMNS if col not in df_batch.columns]
+                
+                if missing_batch_feats:
+                    st.error(f"❌ File dữ liệu thiếu các cột đặc trưng bắt buộc sau: {missing_batch_feats}")
+                else:
+                    X_batch = df_batch[FEATURE_COLUMNS]
+                    
+                    # Dự báo hàng loạt trực tiếp từ mô hình trong session_state
+                    batch_preds = model.predict(X_batch)
+                    df_result = df_batch.copy()
+                    df_result['Predicted_Default'] = batch_preds
+                    
+                    if hasattr(model, "predict_proba"):
+                        df_result['Fraud_Probability'] = model.predict_proba(X_batch)[:, 1]
+                    
+                    st.markdown("##### 📈 Bảng kết quả dự báo chấm điểm hàng loạt:")
+                    with st.container(height=300):
+                        st.dataframe(df_result, use_container_width=True)
+                    
+                    total_cnt = len(df_result)
+                    fraud_cnt = int((batch_preds == 1).sum())
+                    st.warning(f"🔔 Hệ thống phát hiện: Có **{fraud_cnt}/{total_cnt}** giao dịch rủi ro tiềm ẩn (Tỷ lệ: {(fraud_cnt/total_cnt)*100:.2f}%).")
+                    
+                    # Đóng gói xuất file CSV với định dạng mã hóa tiếng Việt utf-8-sig chuẩn xác
+                    csv_output = df_result.to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="📥 Tải xuống tệp kết quả dự báo hàng loạt (.CSV)",
+                        data=csv_output,
+                        file_name="ket_qua_du_bao_gian_lan_hang_loat.csv",
+                        mime="text/csv",
+                        use_container_width=True
+                    )
