@@ -137,4 +137,26 @@ file_bytes = uploaded_file.getvalue()
 df_raw = load_data(file_bytes, uploaded_file.name)
 
 if df_raw is None:
-    st.error("❌ Không thể đọc
+    st.error("❌ Không thể đọc nội dung file. Vui lòng kiểm tra lại cấu trúc.")
+    st.stop()
+
+st.caption(f"📊 Hồ sơ hoạt động: `{uploaded_file.name}` | **{df_raw.shape[0]:,}** dòng | **{df_raw.shape[1]}** cột dữ liệu thuộc tính.")
+st.divider()
+
+# =============================================================================
+# 6) PIPELINE HUẤN LUYỆN
+# =============================================================================
+if train_clicked:
+    with st.spinner("🔄 Đang xử lý phân tách dữ liệu và xây dựng cấu trúc rừng cây quyết định..."):
+        missing_feats = [col for col in FEATURE_COLUMNS if col not in df_raw.columns]
+        if missing_feats or (TARGET_COLUMN not in df_raw.columns):
+            st.error("❌ Dữ liệu lỗi! Thiếu các cột bắt buộc.")
+        else:
+            X = df_raw[FEATURE_COLUMNS]
+            y = df_raw[TARGET_COLUMN]
+            
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_state, stratify=y)
+            
+            model = RandomForestClassifier(
+                n_estimators=n_estimators, criterion=criterion, max_depth=max_depth,
+                min_samples_split=min_samples_split, min_
